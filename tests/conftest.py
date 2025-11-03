@@ -1,8 +1,8 @@
 """Shared pytest fixtures for Imagen skill tests."""
 
+from unittest.mock import AsyncMock
+
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 from imagen_skill.core.config import Config
 from imagen_skill.core.models import (

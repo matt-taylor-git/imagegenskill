@@ -6,8 +6,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from google import genai
-from google.genai.types import GenerateContentConfig, GenerateImagesConfig
+import google.generativeai as genai
+from google import genai as genai_client
+from google.genai import types
+from google.generativeai.types import GenerationConfig
 from PIL import Image
 
 from ..core.config import Config
@@ -30,8 +32,11 @@ class GeminiClient:
         self.timeout = config.timeout
         self.max_retries = config.max_retries
 
-        # Configure Gemini API
-        self.client = genai.Client(api_key=self.api_key)
+        # Configure Gemini API for vision
+        genai.configure(api_key=self.api_key)
+
+        # Initialize Gen AI client for Imagen
+        self.imagen_client = genai_client.Client(api_key=self.api_key)
 
     async def analyze_image_vision(self, image_path: Path, prompt: str) -> dict[str, Any]:
         """Analyze image using Gemini Vision with structured JSON output.
@@ -51,24 +56,24 @@ class GeminiClient:
             image = Image.open(image_path)
 
             # Configure for JSON response
-            config = GenerateContentConfig(
+            config = GenerationConfig(
                 response_mime_type="application/json",
                 temperature=0.2,  # Lower temp for consistent extraction
             )
 
             # Run in executor since genai is synchronous
             loop = asyncio.get_event_loop()
+            model = genai.GenerativeModel(self.config.vision_model)
             response = await loop.run_in_executor(
                 None,
-                lambda: self.client.models.generate_content(
-                    model=self.config.vision_model,
-                    contents=[prompt, image],
-                    config=config,
+                lambda m=model, p=prompt, i=image, c=config: m.generate_content(
+                    contents=[p, i],
+                    generation_config=c,
                 ),
             )
 
             # Parse JSON response
-            result = json.loads(response.text)
+            result: dict[str, Any] = json.loads(response.text)
             logger.debug(f"Vision analysis result: {result}")
             return result
 
@@ -101,18 +106,17 @@ class GeminiClient:
         for attempt in range(self.max_retries):
             try:
                 # Configure generation
-                generation_config = GenerateImagesConfig(
+                generation_config = types.GenerateImagesConfig(
                     number_of_images=number_of_images,
                     aspect_ratio=aspect_ratio,
-                    safety_filter_level="block_medium_and_above",
                 )
 
                 # Generate image (synchronous call wrapped in executor)
                 response = await loop.run_in_executor(
                     None,
-                    lambda cfg=generation_config: self.client.models.generate_images(
+                    lambda cfg=generation_config, p=prompt: self.imagen_client.models.generate_images(
                         model=self.config.default_image_model,
-                        prompt=prompt,
+                        prompt=p,
                         config=cfg,
                     ),
                 )
@@ -123,12 +127,8 @@ class GeminiClient:
 
                 generated_image = response.generated_images[0]
 
-                # Convert PIL Image to bytes
-                import io
-
-                buffer = io.BytesIO()
-                generated_image.image.save(buffer, format="PNG")
-                image_bytes = buffer.getvalue()
+                # Extract bytes from the generated image
+                image_bytes: bytes = generated_image.image.image_bytes
 
                 logger.info(f"Generated image: {len(image_bytes)} bytes")
                 return image_bytes
